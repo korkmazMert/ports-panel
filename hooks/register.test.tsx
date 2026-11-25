@@ -18,6 +18,9 @@ const PANE = {
   },
 } as const
 
+// On a Windows host the engine hands paths on as its own: D:\\code\\acme-app.
+const posix = (path: string) => path.replace(/^[A-Z]:/i, '').replaceAll('\\', '/')
+
 const container = (service: string, port: number) =>
   JSON.stringify({
     name: `/acme-${service}-1`,
@@ -94,9 +97,10 @@ const world = (on: On, options: Options = {}) => {
     return ok([container('backend', 8000), container('redis', 6379)].join('\n'))
   })
   on('vcs.detect', (_, e) => {
-    seen.detected.push(e.path)
-    return e.path === ACME || e.path === SHOP
-      ? { vcs: 'git', root: e.path, mainRoot: e.path, revision: null, branch: null, defaultBranch: null, remote: null }
+    const path = posix(e.path)
+    seen.detected.push(path)
+    return path === ACME || path === SHOP
+      ? { vcs: 'git', root: path, mainRoot: path, revision: null, branch: null, defaultBranch: null, remote: null }
       : null
   })
   on('session.machine', () => ({
@@ -434,7 +438,7 @@ test('an unsupported system is named, and nothing is run', async ($, on) => {
 test('linux: working folders come from /proc, and nothing but ss, ps and docker runs', async ($, on) => {
   const { clock, seen } = world(on, { sysname: 'Linux' })
   on('fs.stat', (_, e) => ({
-    value: { kind: 'dir', size: 0, mtimeMs: 0, isLink: true, realPath: e.path === '/proc/10/cwd' ? SHOP : '/elsewhere' },
+    value: { kind: 'dir', size: 0, mtimeMs: 0, isLink: true, realPath: posix(e.path) === '/proc/10/cwd' ? SHOP : '/elsewhere' },
   }) as never)
   await $.session.start(start)
   await clock.settle()
