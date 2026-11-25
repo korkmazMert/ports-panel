@@ -1,0 +1,7 @@
+{
+  "name": "ports-panel",
+  "version": "0.1.0",
+  "description": "Shows open ports, this repo's first, in the status line and a /ports pane",
+  "types": "./types/index.d.ts",
+  "license": "MIT"
+}

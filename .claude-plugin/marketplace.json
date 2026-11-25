@@ -1,0 +1,5 @@
+{
+  "name": "ports-panel",
+  "owner": { "name": "ports-panel contributors" },
+  "plugins": [{ "name": "ports-panel", "source": "./" }]
+}
