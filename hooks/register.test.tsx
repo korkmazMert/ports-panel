@@ -158,6 +158,15 @@ test('status line shows this repo first, and no model is called', async ($, on) 
   expect(seen.modelCalls).toBe(0)
 })
 
+test('with the status line turned off, nothing is written there and the pane still works', { options: { showStatusLine: false } }, async ($, on) => {
+  const { clock, seen } = world(on)
+  await $.session.start(start)
+  await clock.settle()
+  expect(seen.status).toBeUndefined()
+  await $.command.run(ports)
+  expect(seen.isPaneOpen).toBe(true)
+})
+
 test('a non-interactive session scans nothing', async ($, on) => {
   const { clock, seen } = world(on)
   await $.session.start({ ...start, isInteractive: false })

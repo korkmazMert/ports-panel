@@ -19,6 +19,8 @@ project they belong to.
 ```
 
 A summary stays in the status line: `● acme-app :3000 :6379 :8000  +1 other`.
+To hide it, turn off **Show in status line** for ports-panel in `/config`;
+`/ports` keeps working.
 
 ## Install
 

@@ -1,7 +1,15 @@
 {
   "name": "ports-panel",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Shows open ports, this repo's first, in the status line and a /ports pane",
   "types": "./types/index.d.ts",
-  "license": "MIT"
+  "license": "MIT",
+  "userConfig": {
+    "showStatusLine": {
+      "type": "boolean",
+      "title": "Show in status line",
+      "description": "Show the ports summary in the status line. /ports works either way.",
+      "default": true
+    }
+  }
 }

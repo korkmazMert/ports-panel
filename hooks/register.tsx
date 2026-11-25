@@ -23,6 +23,7 @@ let isForced = false
 let lastFull = 0
 let lastListeners: string | null = null
 let lastWritten = ''
+let isStatusShown = true
 
 const scan = async ($: EngineInterface) => {
   const now = await $.clock.now()
@@ -41,7 +42,7 @@ const scan = async ($: EngineInterface) => {
 
     if (written !== lastWritten) {
       await update($, snapshot, () => next)
-      $.ui.status(statusText(next))
+      if (isStatusShown) $.ui.status(statusText(next))
       lastWritten = written
     }
     if ((await read($, staleSince)) !== null) await update($, staleSince, () => null)
@@ -73,11 +74,14 @@ const refresh = ($: EngineInterface): Promise<void> =>
       return arm($)
     }))
 
-export const register: Register = on => {
+export const register: Register = (on, options) => {
+  isStatusShown = options.showStatusLine !== false
+
   on('session.start', async ($, e, next) => {
     isInteractive = e.isInteractive
 
     if (isInteractive) {
+      if (!isStatusShown) $.ui.status(undefined)
       await $.command.register({
         name: PANE,
         description: "Show or hide open ports, this repo's first",
