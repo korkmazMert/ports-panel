@@ -1,13 +1,9 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import {
-  buildSnapshot,
-  parseContainers,
-  parseCwds,
-  parseListeners,
-  parseProcesses,
-  statusText,
-} from './ports'
+import { DARWIN, LINUX, parseCwds, WINDOWS } from './platforms'
+import { buildSnapshot, foldersFromCommands, isTool, parseContainers, rootOfFolders, statusText } from './ports'
+
+const { parseListeners, parseProcesses } = DARWIN
 
 const ACME = '/code/acme/acme-app'
 const SHOP = '/code/shop_api'
@@ -27,7 +23,7 @@ type World = {
 const snap = (world: World) =>
   buildSnapshot({
     listeners: parseListeners((world.lsof ?? []).join('\n')),
-    cwds: new Map(Object.entries(world.cwds ?? {}).map(([pid, cwd]) => [Number(pid), cwd])),
+    folders: new Map(Object.entries(world.cwds ?? {}).map(([pid, cwd]) => [Number(pid), [cwd]])),
     processes: parseProcesses((world.ps ?? []).join('\n')),
     containers:
       world.containers === null
@@ -255,5 +251,84 @@ describe('status line', () => {
   })
   test('nothing but tools clears the line', () => {
     expect(statusText(snap({ lsof: [listener(1, 'x', '*:7000')], ps: ['1 0 /System/x'] }))).toBe(undefined)
+  })
+})
+
+describe('linux', () => {
+  const base = { processes: new Map(), folders: new Map(), roots: new Map(), currentRoot: null }
+  const listeners = LINUX.parseListeners('LISTEN 0 511 0.0.0.0:8000 0.0.0.0:*\nLISTEN 0 511 127.0.0.1:631 0.0.0.0:*')
+
+  test("root's docker-proxy, seen without its process, is dropped for the container it serves", () => {
+    const containers = parseContainers(JSON.stringify(container('web', { '8000/tcp': [['0.0.0.0', '8000']] })))
+    const got = buildSnapshot({ ...base, listeners, containers })
+    expect([got.groups[0]?.ports.length, got.tools.map(p => p.port)]).toEqual([1, [631]])
+  })
+  test("another user's port shows, as that", () => {
+    const got = buildSnapshot({ ...base, listeners, containers: [] })
+    expect(got.tools.map(p => [p.port, p.label])).toEqual([[631, 'other user'], [8000, 'other user']])
+  })
+  const tools = ['/usr/bin/docker-proxy -proto tcp', '/usr/lib/systemd/systemd-resolved', '/usr/share/code/code --type=utility']
+  for (const command of tools) {
+    test(`${command} is no project service`, () => {
+      const processes = new Map([[5, { ppid: 1, name: '', command }]])
+      const got = buildSnapshot({
+        ...base,
+        processes,
+        containers: [],
+        listeners: [{ pid: 5, name: 'x', port: 9, isLan: false }],
+        folders: new Map([[5, [ACME]]]),
+        roots: new Map([[ACME, ACME]]),
+      })
+      expect([got.groups.length, got.tools.length]).toEqual([0, 1])
+    })
+  }
+  test("a JVM's dev server under /usr/lib is a project service", () => {
+    expect(isTool(5, new Map([[5, { ppid: 1, name: '', command: '/usr/lib/jvm/java-21/bin/java -jar app.jar' }]]))).toBe(false)
+  })
+})
+
+describe('windows', () => {
+  const list = (...rows: [number, number, string, string][]) =>
+    WINDOWS.parseProcesses(
+      JSON.stringify(
+        rows.map(([ProcessId, ParentProcessId, Name, CommandLine]) => ({
+          ProcessId, ParentProcessId, Name, CommandLine, ExecutablePath: null, CreationDate: `/Date(${ProcessId})/`,
+        })),
+      ),
+    )
+
+  test("a relative command takes its folder from its parent's", () => {
+    const processes = list([1, 0, 'python.exe', 'C:\\code\\api\\.venv\\Scripts\\python.exe manage.py'], [2, 1, 'python.exe', 'python manage.py'])
+    expect(foldersFromCommands([2], processes).get(2)).toEqual(['C:\\code\\api\\.venv\\Scripts'])
+  })
+  test("its own folders come before its parent's", () => {
+    const processes = list([1, 0, 'a.exe', 'a C:\\one\\x.js'], [2, 1, 'b.exe', 'b C:\\two\\y.js'])
+    expect(foldersFromCommands([2], processes).get(2)).toEqual(['C:\\two', 'C:\\one'])
+  })
+  test("Claude's own arguments say nothing of what it started", () => {
+    const processes = list([1, 0, 'claude.exe', 'C:\\bin\\claude.exe --add-dir C:\\other\\repo\\x'], [2, 1, 'node.exe', 'node s.js'])
+    expect(foldersFromCommands([2], processes).get(2)).toEqual([])
+  })
+  test('a parent cycle ends', () => {
+    expect(foldersFromCommands([1], new Map([[1, { ppid: 1, name: '', command: 'x' }]])).get(1)).toEqual([])
+  })
+  test('the first folder in a repo decides', () => {
+    expect(rootOfFolders(['C:\\no', 'C:\\app'], new Map([['C:\\app', 'C:\\app']]))).toBe('C:\\app')
+  })
+  test('an MCP server is a tool, whatever slashes claude has', () => {
+    const tool = (command: string) => isTool(2, list([1, 0, 'claude.exe', command], [2, 1, 'node.exe', 'node x']))
+    expect([tool('C:\\bin\\claude.exe'), tool('"C:\\my bin\\claude.exe" --x'), tool('C:\\bin\\claudette.exe'), tool('vim /x/claude y')]).toEqual([true, true, false, false])
+  })
+  test('a repo is named after its folder', () => {
+    const root = 'C:\\code\\app'
+    const got = buildSnapshot({
+      processes: list([2, 0, 'node.exe', 'node x']),
+      listeners: [{ pid: 2, name: '', port: 3000, isLan: false }],
+      containers: [],
+      folders: new Map([[2, [root]]]),
+      roots: new Map([[root, root]]),
+      currentRoot: root,
+    })
+    expect(got.groups.map(g => [g.name, g.isCurrent, g.ports[0]?.label])).toEqual([['app', true, 'node']])
   })
 })

@@ -1,130 +1,20 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, Timer } from 'claude-code'
 
-import type { Port, Snapshot } from '../types'
-import {
-  buildSnapshot,
-  CONTAINER_FORMAT,
-  fingerprint,
-  isTool,
-  parseContainers,
-  parseCwds,
-  parseListeners,
-  parseProcesses,
-  statusText,
-} from './ports'
+import type { Port } from '../types'
+import { collect, listenersNow, run } from './collect'
+import { platformOf } from './platforms'
+import { statusText } from './ports'
 
 const PANE = 'ports'
 const OPEN_EVERY = 3_000
 const CLOSED_EVERY = 15_000
-// A listener can change hands without netstat showing it, so look at all of it at times.
-const FULL_EVERY = 60_000
-const TIMEOUT = 3_000
 
 const snapshot = atom({ plugin: 'ports-panel', key: 'snapshot' } as const, null, {
   shape: 'snapshot-1',
 })
 const staleSince = atom({ plugin: 'ports-panel', key: 'staleSince' } as const, null)
 const isToolsOpen = atom({ plugin: 'ports-panel', key: 'isToolsOpen' } as const, false)
-
-const run = ($: EngineInterface, argv: string[]) => $.process.run(argv, { timeoutMs: TIMEOUT })
-
-// Only a folder found in a repo is kept: one outside may become a repo later.
-const roots = new Map<string, string>()
-
-const rootOf = async ($: EngineInterface, path: string) => {
-  const known = roots.get(path)
-  if (known !== undefined) return known
-
-  const copy = await $.vcs.detect({ path }).catch(() => null)
-  if (copy === null) return null
-
-  const root = copy.mainRoot ?? copy.root
-  roots.set(path, root)
-
-  return root
-}
-
-// netstat costs a few ms where lsof, ps and docker together cost over a hundred.
-const listenersNow = async ($: EngineInterface) => {
-  try {
-    const { exitCode, stdout } = await run($, ['netstat', '-anvA', '-p', 'tcp'])
-
-    return exitCode === 0 ? fingerprint(stdout) : null
-  } catch {
-    return null
-  }
-}
-
-const listListeners = async ($: EngineInterface) => {
-  // +c 0: whole process names. lsof exits 1 both for "none" and for an error.
-  const { exitCode, stdout, stderr } = await run($, [
-    'lsof', '+c', '0', '-nP', '-iTCP', '-sTCP:LISTEN', '-Fpcn',
-  ])
-
-  if (exitCode !== 0 && stdout === '' && stderr !== '') throw new Error('lsof failed')
-
-  return parseListeners(stdout)
-}
-
-const listCwds = async ($: EngineInterface, pids: number[]) => {
-  if (pids.length === 0) return new Map<number, string>()
-
-  // A process that ended meanwhile makes it exit 1; the others are still listed.
-  const { stdout } = await run($, ['lsof', '-a', '-d', 'cwd', '-p', pids.join(','), '-Fpn'])
-
-  return parseCwds(stdout)
-}
-
-const listContainers = async ($: EngineInterface) => {
-  try {
-    const listed = await run($, ['docker', 'ps', '-q', '--no-trunc'])
-    if (listed.exitCode !== 0) return null
-
-    const ids = listed.stdout.split('\n').filter(id => id !== '')
-    if (ids.length === 0) return []
-
-    // A container removed meanwhile makes it exit 1; the others are still printed.
-    const inspected = await run($, ['docker', 'inspect', '--format', CONTAINER_FORMAT, ...ids])
-
-    return parseContainers(inspected.stdout)
-  } catch {
-    return null
-  }
-}
-
-const collect = async ($: EngineInterface): Promise<Snapshot> => {
-  const [listeners, ps, containers, currentFolder] = await Promise.all([
-    listListeners($),
-    run($, ['ps', '-axww', '-o', 'pid=,ppid=,command=']),
-    listContainers($),
-    $.session.root(),
-  ])
-  const processes = parseProcesses(ps.stdout)
-  const services = new Set(
-    listeners.map(({ pid }) => pid).filter(pid => !isTool(pid, processes)),
-  )
-  const cwds = await listCwds($, [...services])
-  const folders = new Set([
-    ...cwds.values(),
-    ...(containers ?? []).filter(({ ports }) => ports.length > 0).map(({ dir }) => dir),
-  ])
-  folders.delete('/')
-  folders.delete('')
-
-  const found = await Promise.all(
-    [...folders].map(async folder => [folder, await rootOf($, folder)] as const),
-  )
-
-  return buildSnapshot({
-    listeners,
-    cwds,
-    processes,
-    containers,
-    roots: new Map(found.filter((pair): pair is [string, string] => pair[1] !== null)),
-    currentRoot: await rootOf($, currentFolder),
-  })
-}
 
 let running: Promise<void> | null = null
 let timer: Timer | null = null
@@ -136,15 +26,17 @@ let lastWritten = ''
 
 const scan = async ($: EngineInterface) => {
   const now = await $.clock.now()
+  const platform = platformOf((await $.session.machine()).sysname)
+  if (platform === null) return
 
   try {
-    const listeners = await listenersNow($)
+    const listeners = await listenersNow($, platform)
     const isSame = listeners !== null && listeners === lastListeners
 
-    if (isSame && !isForced && now - lastFull < FULL_EVERY) return
+    if (isSame && !isForced && now - lastFull < platform.fullEveryMs) return
 
     isForced = false
-    const next = await collect($)
+    const next = await collect($, platform)
     const written = JSON.stringify(next)
 
     if (written !== lastWritten) {
@@ -219,7 +111,11 @@ export const register: Register = on => {
     const found = await read($, snapshot)
     const stale = await read($, staleSince)
     const areToolsOpen = await read($, isToolsOpen)
+    const { sysname } = await $.session.machine()
+    const platform = platformOf(sysname)
     const isWide = e.props.bodyColumns >= 42
+
+    if (platform === null) return <Text dimColor>{sysname} is not supported.</Text>
 
     const refreshAll = () => {
       isForced = true
@@ -233,8 +129,11 @@ export const register: Register = on => {
       const target = row.isWeb ? `http://${address}` : address
 
       const openUrl = async () => {
-        const { exitCode } = await run($, ['open', target])
-        if (exitCode !== 0) $.ui.toast(`Could not open ${target}`)
+        const isOpened = await run($, platform, platform.open(target)).then(
+          ({ exitCode }) => exitCode === 0,
+          () => false,
+        )
+        if (!isOpened) $.ui.toast(`Could not open ${target}`)
       }
 
       return (

@@ -27,7 +27,7 @@ const container = (service: string, port: number) =>
     ports: { [`${port}/tcp`]: [{ HostIp: '0.0.0.0', HostPort: String(port) }] },
   })
 
-type Options = { isDockerDown?: boolean }
+type Options = { isDockerDown?: boolean; isDockerMissing?: boolean; sysname?: string; isOpenMissing?: boolean }
 
 // Stands for the machine and the engine beneath the mod.
 const world = (on: On, options: Options = {}) => {
@@ -37,6 +37,7 @@ const world = (on: On, options: Options = {}) => {
     status: undefined as string | undefined,
     opened: [] as string[],
     copied: [] as string[],
+    toasts: [] as string[],
     isPaneOpen: false,
     isLsofBroken: false,
     isNetstatBroken: false,
@@ -59,12 +60,16 @@ const world = (on: On, options: Options = {}) => {
   on('process.run', async (_, e) => {
     const line = e.argv.join(' ')
     seen.runs.push(line)
-    if (e.argv[0] === 'open') {
-      seen.opened.push(e.argv[1] ?? '')
+    if (['open', 'xdg-open', 'rundll32'].includes(e.argv[0] ?? '')) {
+      if (options.isOpenMissing) return { deny: 'failed to start: ENOENT: not found' }
+      seen.opened.push(e.argv.at(-1) ?? '')
       return ok('')
     }
     if (e.argv[0] === 'netstat') {
       return seen.isNetstatBroken ? ok('', 1, 'netstat: broken') : ok(seen.netstat.join('\n'))
+    }
+    if (e.argv[0] === 'ss') {
+      return ok('LISTEN 0 511 127.0.0.1:3011 0.0.0.0:* users:(("node",pid=10,fd=3)) ino:1 sk:1\n')
     }
     if (line.includes('LISTEN')) {
       seen.inFlight += 1
@@ -81,6 +86,9 @@ const world = (on: On, options: Options = {}) => {
       return ok(asked.map(pid => `p${pid}\nfcwd\nn${folders[pid]}`).join('\n'))
     }
     if (e.argv[0] === 'ps') return ok('10 9 node server.js\n11 1 /System/Library/ControlCenter')
+    if (e.argv[0] === 'docker' && options.isDockerMissing) {
+      return { deny: 'failed to start: ENOENT: not found' }
+    }
     if (options.isDockerDown) return ok('', 1, 'Cannot connect to the Docker daemon')
     if (line.startsWith('docker ps')) return ok('aaa\nbbb\n')
     return ok([container('backend', 8000), container('redis', 6379)].join('\n'))
@@ -91,6 +99,9 @@ const world = (on: On, options: Options = {}) => {
       ? { vcs: 'git', root: e.path, mainRoot: e.path, revision: null, branch: null, defaultBranch: null, remote: null }
       : null
   })
+  on('session.machine', () => ({
+    value: { sysname: options.sysname ?? 'Darwin', release: '', machine: '', packageManagers: [], runtimes: [] },
+  }))
   on('session.root', () => ({ value: ACME }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('turn.complete', () => ({ text: '' }))
@@ -99,7 +110,10 @@ const world = (on: On, options: Options = {}) => {
     seen.status = e.text
     return { value: undefined } as never
   })
-  on('ui.toast', () => ({ value: undefined }) as never)
+  on('ui.toast', (_, e) => {
+    seen.toasts.push(e.text)
+    return { value: undefined } as never
+  })
   on('ui.log', () => ({ value: undefined }) as never)
   on('ui.panes', () => ({
     value: seen.isPaneOpen
@@ -385,4 +399,45 @@ test('nothing but read-only commands run while scanning', async ($, on) => {
   await $.session.start(start)
   await clock.advance(30_000)
   expect(seen.runs.filter(line => !/^(netstat|lsof|ps|docker ps|docker inspect) /.test(line))).toEqual([])
+})
+
+test('docker not installed is nothing to warn of', async ($, on) => {
+  const { clock } = world(on, { isDockerMissing: true })
+  await $.session.start(start)
+  await clock.settle()
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: /shop_api/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Docker/ })).toBe(undefined)
+  await ui.unmount()
+})
+
+test('a system with no browser opener says so', async ($, on) => {
+  const { clock, seen } = world(on, { isOpenMissing: true })
+  await $.session.start(start)
+  await clock.settle()
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'open:repo:/code/acme-app:8000:docker:backend' })
+  expect(seen.toasts).toEqual(['Could not open http://localhost:8000'])
+  await ui.unmount()
+})
+
+test('an unsupported system is named, and nothing is run', async ($, on) => {
+  const { clock, seen } = world(on, { sysname: 'FreeBSD' })
+  await $.session.start(start)
+  await clock.advance(60_000)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: /FreeBSD is not supported/ })).toBeDefined()
+  expect(seen.runs).toEqual([])
+  await ui.unmount()
+})
+
+test('linux: working folders come from /proc, and nothing but ss, ps and docker runs', async ($, on) => {
+  const { clock, seen } = world(on, { sysname: 'Linux' })
+  on('fs.stat', (_, e) => ({
+    value: { kind: 'dir', size: 0, mtimeMs: 0, isLink: true, realPath: e.path === '/proc/10/cwd' ? SHOP : '/elsewhere' },
+  }) as never)
+  await $.session.start(start)
+  await clock.settle()
+  expect(seen.runs.filter(line => !/^(ss|ps|docker) /.test(line))).toEqual([])
+  expect(seen.status).toBe('● acme-app :6379 :8000  +1 other')
 })

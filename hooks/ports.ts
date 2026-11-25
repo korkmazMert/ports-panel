@@ -1,7 +1,9 @@
 import type { Group, Port, Snapshot } from '../types'
+import { isLoopback, pathsIn } from './platforms'
 
-export type Listener = { pid: number; name: string; port: number; isLan: boolean }
-export type Process = { ppid: number; command: string }
+/** `pid` is null where the system does not tell whose it is. */
+export type Listener = { pid: number | null; name: string; port: number; isLan: boolean }
+export type Process = { ppid: number; name: string; command: string }
 export type Container = {
   name: string
   service: string
@@ -12,7 +14,8 @@ export type Container = {
 
 type Facts = {
   listeners: Listener[]
-  cwds: Map<number, string>
+  /** The folders a process may belong to, the likeliest first. */
+  folders: Map<number, string[]>
   processes: Map<number, Process>
   /** null: Docker could not be asked. */
   containers: Container[] | null
@@ -26,93 +29,27 @@ const NON_WEB = new Set([
   1025, 1433, 1521, 2181, 3306, 5432, 5672, 6379, 9042, 9092, 11211, 27017,
 ])
 
-const CLAUDE = /^(\S*\/)?claude(\.exe)?(\s|$)|@anthropic-ai\/claude-code/
-const DOCKER_PROXY = /com\.docker\.|OrbStack|limactl|\/\.lima\/|vpnkit|gvproxy/
-const SYSTEM = /^(\/System\/|\/usr\/libexec\/|\/usr\/sbin\/|\/Library\/Apple\/|\/Applications\/(?!Xcode\.app\/Contents\/Developer\/))/
+// Tested on commands with forward slashes.
+const CLAUDE = /^("[^"]*\/claude(\.exe)?"|(\S*\/)?claude(\.exe)?)(\s|$)|@anthropic-ai\/claude-code/
+const DOCKER_PROXY = /com\.docker\.|OrbStack|limactl|\/\.lima\/|vpnkit|gvproxy|wslrelay|docker-proxy|rootlesskit|slirp4netns|(^|\/)pasta(\s|$)/
+const SYSTEM = /^(\/System\/|\/usr\/libexec\/|\/usr\/sbin\/|\/usr\/lib\/systemd\/|\/usr\/share\/|\/Library\/Apple\/|\/Applications\/(?!Xcode\.app\/Contents\/Developer\/))/
 // ponytail: a list of names, so a new tool shows as a service until it is added
 // here; a wrong match only moves a row into the collapsed group.
 const TOOLING = [
   /serena/,
   /codebase-memory/,
   /maestro\.cli/,
-  /Library\/Android\/sdk\/(emulator|platform-tools)\//,
+  /Android\/sdk\/(emulator|platform-tools)\//i,
   /Library\/Developer\/CoreSimulator\//,
-  /^(\S*\/)?(adb|netsimd)\s/,
-  /\bdart (tooling-daemon|devtools|language-server)\b/,
-  /\.vscode\/extensions\//,
+  /^(\S*\/)?(adb|netsimd)(\.exe)?\s/,
+  /\bdart(\.exe)? "?(tooling-daemon|devtools|language-server)\b/,
+  /\.vscode(-server)?\/(extensions|cli|bin)\//,
+  /^\S*\/(snap|opt)\/(code|codium|cursor|windsurf)\//i,
+  /^\S*JetBrains/,
   /GradleDaemon/,
 ]
 
-const isLoopback = (host: string) =>
-  host === 'localhost' || host === '[::1]' || host === '::1' || host.startsWith('127.')
-
-const unescape = (text: string) =>
-  text.replace(/\\x([0-9a-f]{2})/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
-
 const lines = (text: string) => text.split('\n').filter(line => line !== '')
-
-/**
- * `netstat -anvA -p tcp` (macOS) reduced to what identifies its listeners: socket,
- * address and pid. Null where there is none to compare.
- */
-export const fingerprint = (text: string): string | null => {
-  const rows = lines(text).flatMap(line => {
-    const cells = line.trim().split(/\s+/)
-    const state = cells.indexOf('LISTEN')
-
-    return state === -1 ? [] : [`${cells[0]} ${cells[state - 2]} ${cells[state + 5]}`]
-  })
-
-  return rows.length === 0 ? null : rows.sort().join('\n')
-}
-
-/** `lsof -F pcn` of listening sockets; one row per process and port. */
-export const parseListeners = (text: string): Listener[] => {
-  const found = new Map<string, Listener>()
-  let pid = 0
-  let name = ''
-
-  for (const line of lines(text)) {
-    const value = line.slice(1)
-
-    if (line[0] === 'p') pid = Number(value)
-    if (line[0] === 'c') name = unescape(value)
-    if (line[0] !== 'n') continue
-
-    const colon = value.lastIndexOf(':')
-    const port = Number(value.slice(colon + 1))
-    const isLan = !isLoopback(value.slice(0, colon))
-    const key = `${pid}:${port}`
-    found.set(key, { pid, name, port, isLan: isLan || found.get(key)?.isLan === true })
-  }
-
-  return [...found.values()]
-}
-
-/** `lsof -d cwd -F pn`: each process's working folder. */
-export const parseCwds = (text: string): Map<number, string> => {
-  const cwds = new Map<number, string>()
-  let pid = 0
-
-  for (const line of lines(text)) {
-    if (line[0] === 'p') pid = Number(line.slice(1))
-    if (line[0] === 'n') cwds.set(pid, line.slice(1))
-  }
-
-  return cwds
-}
-
-/** `ps -o pid=,ppid=,command=`. */
-export const parseProcesses = (text: string): Map<number, Process> => {
-  const processes = new Map<number, Process>()
-
-  for (const line of lines(text)) {
-    const match = /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(line)
-    if (match) processes.set(Number(match[1]), { ppid: Number(match[2]), command: match[3] ?? '' })
-  }
-
-  return processes
-}
 
 export const CONTAINER_FORMAT =
   '{"name":{{json .Name}},"ports":{{json .NetworkSettings.Ports}}' +
@@ -143,13 +80,42 @@ export const parseContainers = (text: string): Container[] =>
     return { ...raw, name: raw.name.replace(/^\//, ''), ports: [...ports.values()] }
   })
 
-export const isTool = (pid: number, processes: Map<number, Process>) => {
-  const { command, ppid } = processes.get(pid) ?? { command: '', ppid: 0 }
-  // Claude starts MCP servers itself, and a dev server through a shell.
-  const isMcpServer = CLAUDE.test(processes.get(ppid)?.command ?? '')
+const commandOf = (pid: number | null, processes: Map<number, Process>) =>
+  (pid === null ? '' : (processes.get(pid)?.command ?? '')).replaceAll('\\', '/')
 
-  return isMcpServer || [CLAUDE, SYSTEM, ...TOOLING].some(one => one.test(command))
+export const isTool = (pid: number | null, processes: Map<number, Process>) => {
+  const command = commandOf(pid, processes)
+  // Claude starts MCP servers itself, and a dev server through a shell.
+  const parent = pid === null ? null : (processes.get(pid)?.ppid ?? null)
+  const isMcpServer = CLAUDE.test(commandOf(parent, processes))
+
+  return isMcpServer || [CLAUDE, DOCKER_PROXY, SYSTEM, ...TOOLING].some(one => one.test(command))
 }
+
+const ANCESTORS = 3
+
+/** Where the system does not tell folders: the paths in the commands of a process and its parents. */
+export const foldersFromCommands = (pids: number[], processes: Map<number, Process>) =>
+  new Map(
+    pids.map(pid => {
+      const folders: string[] = []
+      let at = pid
+
+      for (let depth = 0; depth <= ANCESTORS; depth += 1) {
+        const process = processes.get(at)
+        if (process === undefined || CLAUDE.test(commandOf(at, processes))) break
+
+        folders.push(...pathsIn(process.command))
+        at = process.ppid
+      }
+
+      return [pid, [...new Set(folders)]]
+    }),
+  )
+
+/** The repo of the first folder that is in one. */
+export const rootOfFolders = (folders: string[], roots: Map<string, string>) =>
+  folders.map(folder => roots.get(folder)).find(root => root !== undefined)
 
 const byPort = (a: Port, b: Port) =>
   a.port - b.port || a.kind.localeCompare(b.kind) || a.label.localeCompare(b.label)
@@ -164,7 +130,7 @@ const push = (rows: Port[], row: Port) => {
   else same.isLan ||= row.isLan
 }
 
-const baseName = (path: string) => path.slice(path.lastIndexOf('/') + 1)
+const baseName = (path: string) => path.slice(Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\')) + 1)
 
 export const buildSnapshot = (facts: Facts): Snapshot => {
   const groups = new Map<string, Group>()
@@ -200,12 +166,14 @@ export const buildSnapshot = (facts: Facts): Snapshot => {
   }
 
   for (const { pid, name, port, isLan } of facts.listeners) {
-    const command = facts.processes.get(pid)?.command ?? name
+    const process = pid === null ? undefined : facts.processes.get(pid)
+    const isProxy = pid === null || DOCKER_PROXY.test(process?.command ?? name)
 
-    if (published.has(port) && DOCKER_PROXY.test(command)) continue
+    if (published.has(port) && isProxy) continue
 
-    const row: Port = { port, label: name, kind: 'native', isLan, isWeb: !NON_WEB.has(port) }
-    const root = facts.roots.get(facts.cwds.get(pid) ?? '')
+    const label = pid === null ? 'other user' : name || process?.name || `pid ${pid}`
+    const row: Port = { port, label, kind: 'native', isLan, isWeb: !NON_WEB.has(port) }
+    const root = rootOfFolders(pid === null ? [] : (facts.folders.get(pid) ?? []), facts.roots)
 
     if (root === undefined || isTool(pid, facts.processes)) push(tools, row)
     else addToRepo(root, row)
