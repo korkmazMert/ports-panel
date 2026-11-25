@@ -1,6 +1,7 @@
 # ports-panel
 
-A Claude Code mod that shows the open ports on your Mac. Ports of the repo you
+A Claude Code mod that shows the open ports on your computer, on macOS, Linux
+and Windows. Ports of the repo you
 are working in come first, then other projects, then system processes and
 tools in a collapsed group. Docker Compose services are listed under the
 project they belong to.
@@ -48,17 +49,32 @@ marketplace with `korkmazMert/ports-panel`, then Add plugin.
 ## What it runs
 
 - It makes no model calls, so it does not use your usage limit.
-- It only reads: `netstat`, `lsof`, `ps`, `docker ps` and `docker inspect`
-  (names, ports and Compose labels, never a container's environment). It
-  cannot stop a process or container, and sends nothing anywhere.
-- A check is one `netstat`, every 3 s with the pane open and every 15 s
-  otherwise. The rest runs when a listener changes, and once a minute.
+- It only reads, and cannot stop a process or container. It sends nothing
+  anywhere.
+
+  | | Each check | When a listener changes |
+  | --- | --- | --- |
+  | macOS | `netstat` | `lsof`, `ps` |
+  | Linux | `ss` | `ss`, `ps`, `/proc/<pid>/cwd` |
+  | Windows | `netstat` | `netstat`, PowerShell (`Win32_Process`) |
+
+  And on all three `docker ps` and `docker inspect`: names, ports and Compose
+  labels, never a container's environment.
+- A check runs every 3 s with the pane open and every 15 s otherwise. The rest
+  also runs once a minute (every 5 minutes on Windows).
 
 ## Limits
 
-- macOS only. Docker is optional.
-- `lsof` without sudo lists your own processes, so ports owned by root do not
-  show, except those Docker publishes.
+- Docker is optional. Linux needs `ss` (iproute2) and `ps` (procps), which most
+  distributions have, and `xdg-open` to open a port.
+- Other users' processes, root's included, do not show on macOS. On Linux they
+  show as `other user`, under "System & tools". Ports Docker publishes always
+  show.
+- Windows has no supported way to read another process's working folder, so a
+  native process is matched to a project by the full paths in its command, or
+  in the commands of the processes that started it. A server started with
+  relative paths alone (`node server.js`) is under "System & tools". Docker
+  containers are matched as everywhere else.
 - "System & tools" is a heuristic. A wrong guess moves a port to or from the
   collapsed group; nothing is hidden.
 
@@ -68,6 +84,7 @@ marketplace with `korkmazMert/ports-panel`, then Add plugin.
 claude --plugin-dir .
 claude plugin validate .
 claude plugin test .
+node e2e/run.mjs            # real servers, real engine; no login, no model call
 ```
 
 ## License

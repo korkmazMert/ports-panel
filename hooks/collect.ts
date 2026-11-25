@@ -23,7 +23,7 @@ async function rootOf($: EngineInterface, platform: Platform, path: string) {
   if (copy === null) return null
 
   const root = copy.mainRoot ?? copy.root
-  const key = platform.folders === 'commands' ? root.replaceAll('\\', '/').toLowerCase() : root
+  const key = platform.keyOf(root)
   const spelling = spellings.get(key) ?? root
   spellings.set(key, spelling)
   roots.set(path, spelling)

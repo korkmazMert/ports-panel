@@ -102,6 +102,12 @@ try {
   assert.equal(rows[2][0]?.group, isWindows ? 'tools' : 'other-app')
   assert.equal(after.snapshot.groups[0]?.name, 'current-app')
 
+  // Windows ignores the case of a path, so the same repo.
+  if (isWindows) {
+    const shouted = probe(current.toUpperCase())
+    assert.equal(at(shouted, 38311)[0]?.isCurrent, true, 'the repo in capitals is another one')
+  }
+
   children.pop().kill()
   await new Promise(resolve => setTimeout(resolve, 1_000))
   const stopped = probe(current)

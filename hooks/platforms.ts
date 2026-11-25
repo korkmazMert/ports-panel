@@ -11,12 +11,14 @@ export type Platform = {
   /** Where a process's folder is found: lsof, /proc, or the paths in its command. */
   folders: 'lsof' | 'proc' | 'commands'
   open: (url: string) => string[]
+  /** The same for every spelling of one repo's path. */
+  keyOf: (root: string) => string
   timeoutMs: number
   /** How often to look at everything, whatever `check` says. */
   fullEveryMs: number
 }
 
-const lines = (text: string) => text.split(/\r?\n/).filter(line => line.trim() !== '')
+const lines = (text: string) => text.split('\n').filter(line => line.trim() !== '')
 
 const cellsOf = (line: string) => line.trim().split(/\s+/)
 
@@ -110,6 +112,7 @@ export const DARWIN: Platform = {
   parseProcesses: parsePs,
   folders: 'lsof',
   open: url => ['open', url],
+  keyOf: root => root,
   timeoutMs: 3_000,
   fullEveryMs: 60_000,
 }
@@ -150,6 +153,7 @@ export const LINUX: Platform = {
   parseProcesses: parsePs,
   folders: 'proc',
   open: url => ['xdg-open', url],
+  keyOf: root => root,
   timeoutMs: 3_000,
   fullEveryMs: 60_000,
 }
@@ -192,7 +196,7 @@ export const WINDOWS: Platform = {
       `Select-Object ${FIELDS} | ConvertTo-Json -Compress`,
   ],
   parseProcesses: text => {
-    const rows = [JSON.parse(text.replace(/^﻿/, ''))].flat() as WindowsProcess[]
+    const rows = [JSON.parse(text.replace(/^\uFEFF/, ''))].flat() as WindowsProcess[]
     const born = new Map(rows.map(row => [row.ProcessId, createdAt(row)]))
 
     return new Map(
@@ -213,6 +217,7 @@ export const WINDOWS: Platform = {
   },
   folders: 'commands',
   open: url => ['rundll32', 'url.dll,FileProtocolHandler', url],
+  keyOf: root => root.replaceAll('\\', '/').toLowerCase(),
   // PowerShell takes about a second to start: give it time, and run it seldom.
   timeoutMs: 15_000,
   fullEveryMs: 300_000,

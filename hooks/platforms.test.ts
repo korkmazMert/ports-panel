@@ -20,6 +20,11 @@ test('a URL is opened by argument, never through a shell', () => {
   ])
 })
 
+test('Windows ignores case and takes either slash in a path, Linux does not', () => {
+  expect(WINDOWS.keyOf('c:\\Code\\App')).toBe(WINDOWS.keyOf('C:/code/app'))
+  expect(LINUX.keyOf('/code/App') === LINUX.keyOf('/code/app')).toBe(false)
+})
+
 describe('linux', () => {
   const users = (...list: [string, number][]) =>
     `users:(${list.map(([name, pid]) => `("${name}",pid=${pid},fd=20)`).join(',')})`
@@ -36,6 +41,7 @@ describe('linux', () => {
         row('[::1]:8002', users(['java', 13])),
         row('[::ffff:127.0.0.1]:8003', users(['java', 14])),
         row('127.0.0.53%lo:53'),
+        row('[::1%lo]:54'),
       ),
     ).toEqual([
       [10, 'node', 3011, false],
@@ -44,6 +50,7 @@ describe('linux', () => {
       [13, 'java', 8002, false],
       [14, 'java', 8003, false],
       [null, '', 53, false],
+      [null, '', 54, false],
     ])
   })
 
@@ -116,6 +123,9 @@ describe('windows', () => {
   test('a reused parent id, younger than the child, is no parent', () => {
     const got = WINDOWS.parseProcesses(JSON.stringify([one(10, 11, 100), one(11, 0, 200), one(12, 11, 300)]))
     expect([got.get(10)?.ppid, got.get(12)?.ppid]).toEqual([0, 11])
+  })
+  test('a byte order mark before the answer is skipped', () => {
+    expect(WINDOWS.parseProcesses(`\uFEFF${JSON.stringify([one(7, 0, 1)])}`).has(7)).toBe(true)
   })
   test('a single process is not a list', () => {
     expect(WINDOWS.parseProcesses(JSON.stringify(one(7, 0, 1))).has(7)).toBe(true)
