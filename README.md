@@ -39,6 +39,15 @@ claude plugin install ports-panel --marketplace korkmazMert/ports-panel
 In the desktop app, click + next to the prompt box, then Plugins, Add
 marketplace with `korkmazMert/ports-panel`, then Add plugin.
 
+## Update
+
+From a shell, then restart Claude Code:
+
+```sh
+claude plugin marketplace update ports-panel
+claude plugin update ports-panel@ports-panel
+```
+
 ## Use
 
 - `/ports` shows or hides the pane.
