@@ -1,5 +1,5 @@
 import { expect, mock, test } from 'claude-code/testing'
-import type { On } from 'claude-code'
+import type { On, RenderNode } from 'claude-code'
 
 const ACME = '/code/acme-app'
 const SHOP = '/code/shop_api'
@@ -354,6 +354,35 @@ test('pane: groups, tools collapsed until pressed', async ($, on) => {
     await ui.unmount()
   }
 })
+
+// The words left to the terminal's own color. The pane's background is the
+// theme's, so they vanish where the two differ. A Button's label is one of them:
+// it has no color, and its dimColor is dropped under the focus and the pointer.
+const unthemed = (node: RenderNode, isThemed = false): string[] => {
+  if (typeof node === 'string') return isThemed ? [] : [node]
+  if (node.type !== 'Box' && node.type !== 'Text' && node.type !== 'Button') {
+    throw new Error(`no rule for the words of ${node.type}`)
+  }
+  if (node.type === 'Text') {
+    const { color, dimColor } = node.props ?? {}
+    isThemed ||= color !== undefined || dimColor === true
+  }
+  const words = node.children ?? (node.type === 'Button' ? [node.props.label] : [])
+
+  return words.flatMap(child => unthemed(child, isThemed))
+}
+
+for (const [name, options] of [['docker up', {}], ['docker down', { isDockerDown: true }]] as const) {
+  test(`every word is in a color of the theme, ${name}`, async ($, on) => {
+    const { clock } = world(on, options)
+    await $.session.start(start)
+    await clock.settle()
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    await ui.press({ key: 'tools' })
+    expect(unthemed(await ui.drawn())).toEqual([])
+    await ui.unmount()
+  })
+}
 
 test('a web port opens and copies its URL, a database only copies', async ($, on) => {
   const { clock, seen } = world(on)

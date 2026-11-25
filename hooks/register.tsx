@@ -140,13 +140,15 @@ export const register: Register = on => {
         <Box key={`row:${id}`} gap={1}>
           <Box width={8} flexShrink={0} paddingLeft={2}>
             {row.isWeb ? (
-              <Button key={`open:${id}`} label={`:${row.port}`} plain onPress={openUrl} />
+              <Button key={`open:${id}`} plain onPress={openUrl}>
+                <Text color="text">:{row.port}</Text>
+              </Button>
             ) : (
-              <Text>:{row.port}</Text>
+              <Text color="text">:{row.port}</Text>
             )}
           </Box>
           <Box flexGrow={1} flexShrink={1} minWidth={0}>
-            <Text wrap="truncate-end">{row.label}</Text>
+            <Text color="text" wrap="truncate-end">{row.label}</Text>
           </Box>
           {isWide && (
             <Box width={6} flexShrink={0}>
@@ -158,14 +160,14 @@ export const register: Register = on => {
           </Box>
           <Button
             key={`copy:${id}`}
-            label="copy"
             plain
-            dimColor
             onPress={async press => {
               const copied = await $.ui.copy({ text: target, surface: press.surface })
               $.ui.toast(copied.isCopied ? `Copied ${target}` : `Could not copy ${target}`)
             }}
-          />
+          >
+            <Text dimColor>copy</Text>
+          </Button>
         </Box>
       )
     }
@@ -182,7 +184,7 @@ export const register: Register = on => {
         {found.groups.map(group => (
           <Box flexDirection="column">
             <Box justifyContent="space-between">
-              <Text weight="bold" color={group.isCurrent ? 'success' : undefined} wrap="truncate-end">
+              <Text weight="bold" color={group.isCurrent ? 'success' : 'text'} wrap="truncate-end">
                 {group.isCurrent ? '● ' : '  '}
                 {group.name}
               </Text>
@@ -193,13 +195,11 @@ export const register: Register = on => {
         ))}
         <Box flexDirection="column">
           <Box>
-            <Button
-              key="tools"
-              label={`${areToolsOpen ? '▾' : '▸'} System & tools (${found.tools.length})`}
-              plain
-              dimColor
-              onPress={() => update($, isToolsOpen, value => !value)}
-            />
+            <Button key="tools" plain onPress={() => update($, isToolsOpen, value => !value)}>
+              <Text dimColor>
+                {areToolsOpen ? '▾' : '▸'} System & tools ({found.tools.length})
+              </Text>
+            </Button>
           </Box>
           {areToolsOpen && found.tools.map(row => rowOf('tools', row))}
         </Box>
@@ -207,7 +207,9 @@ export const register: Register = on => {
           {!found.isDockerUp && <Text color="warning">Docker unavailable: containers not shown</Text>}
           {stale !== null && <Text color="warning">Stale: updates failing for {age}s</Text>}
           <Box>
-            <Button key="refresh" label="Refresh" hotkey="r" plain onPress={refreshAll} />
+            <Button key="refresh" hotkey="r" plain onPress={refreshAll}>
+              <Text color="text">Refresh</Text>
+            </Button>
           </Box>
         </Box>
       </Box>
